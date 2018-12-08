@@ -1,1 +1,95 @@
+library(splines)
+
+
+data = read.table("dataset_comp_with_n_seas.txt", sep = " ", header = T)
+#data$tij=data$tij+1
+data$n_seas=data$n_seas+1
+data = data[- which(data[, 1] == 677), ]  ## to remove?? all or only the last one?
+data = data[- which(data[, 1] == 426), ]  ## to remove?? all or only the last one?
+dim(data)
+colnames(data)
+length(unique(data$id))
+#data = data[- which(data[, 9] >= 21), ]  ## to remove?? all or only the last one?
+#data = data[- which(ni < 20), ]  ## to remove?? all or only the last one?
+#id_to_remove <- which(ni < 20)
+#data = data[- which(data[, 1] == id_to_remove), ]  ## to remove?? all or only the last one?
+
+head(rni)
+rni<-table(data[,1])
+da_canc<-rni[which(rni<20)]
+a<-as.numeric(names(da_canc))
+data = data[- which(data[, 1] %in% as.numeric(names(da_canc))), ]  ## to remove?? all or only the last one?
+length(unique(data$id))
+#which(unique(data$id) %in% id_dop_atl)
+#dop_data=data[data$dop==1,]
+#head(dop_data)
+#unique(dop_data$id)
+id_dop_atl<-c(27,62,160,167,412,466,485,517,652,655,666,692,725,775,794,890,936,940)
+row_number_id_after_remove<-c(14,23,53,58,147,179,193,209,290,291,295,315,342,392,410,501,544,548)
+
+head(data)
+
+head(table(data[,1]))
+x11();plot(table(data[,1]))
+
+#remove id before 1996
+id_before1996=unique(data[data[,8]<=1996,]$id)
+data = data[- which(data[, 1] %in% as.numeric(id_before1996)), ]  ## to remove?? all or only the last one?
+dim(data)
+length(unique(data$id)) ##683 athlete remained
+
+
+head(ni)
+ni<-tabulate(data[,1])
+nni<-c()
+for (i in 1:length(ni))
+  if (ni[i]!=0) nni<-c(nni,ni[i]) 
+##nni: total # of shot put in career
+
+si<-tabulate(data[,9])
+tt=table(data[,c(1,9)])
+
+data[data$id==4,]  
+tt[1,]
+#length(which(ni<=5))  #92 athlete has less than 5 obs (remove)
+#length(which(ni>5&ni<=1#0))  #70 athlete 
+#length(which(ni>10&ni<=#15))  #50 athlete 
+#
+Si=c()
+for (j in unique(data$id))
+  Si<-c(Si,max(data[data$id==j,9]))
+length(Si)
+##Si: number of season per athlete i
+
+#change in ID number
+id_after_remove<-unique(data$id)
+new_id<-1:length(id_after_remove)
+nni[1:2]
+data$id_new=rep(new_id,nni)
+head(id_after_remove)
+dim(data)
+
+
+
+
+
+BB26=bs(b$tij/max(b$tij),degree=3,df=90,intercept = F)
+tg4=seq(0,1,length.out = 300)
+bb26=bs(tg4,degree=3,df=90,intercept = F)
+
+
+iddd=c(1,2,14,23,24,26,27,30,44,47,53,58,59,68,76,85,89,98,100,107,109,116,136,137,147)
+iddd1=c(1,2,14,23,24,26,27,30,44,47,53,58)
+b1=data[which((data$id_new==1|data$id_new==2|data$id_new==14|data$id_new==23|data$id_new==24|data$id_new==26|data$id_new==27|data$id_new==30|data$id_new==44|data$id_new==47|data$id_new==53|data$id_new==58)),]
+b=data[which((data$id_new==1|data$id_new==2|data$id_new==14|data$id_new==23|data$id_new==24|data$id_new==26|data$id_new==27|data$id_new==30|data$id_new==44|data$id_new==47|data$id_new==53|data$id_new==58|data$id_new==59|data$id_new==68|data$id_new==76|data$id_new==85|data$id_new==89|data$id_new==98|data$id_new==100|data$id_new==107|data$id_new==109|data$id_new==116|data$id_new==136|data$id_new==137|data$id_new==147)),]
+
+b$enveironment=b$enveironment-1
+b$age=b$age-mean(data$age)
+b1$enveironment=b1$enveironment-1
+b1$age=b1$age-mean(data$age)
+
+gibbs_centered_atl=gibbs_compl_small_hyp(as.matrix(b[,c(1,2,3,9)]),as.matrix(b[,c(4,5,7)]),BB26,as.matrix(tt)[iddd,],Si[iddd],nu0tau=3,sigma0tau=2,m0=0,s0=1)
+
+gibbs_centered_autoregr=gibbs_compl_small_autoregr(as.matrix(b[,c(1,2,3,9)]),as.matrix(b[,c(4,5,7)]),BB26,as.matrix(tt)[iddd,],Si[iddd],60.0,4.0)
+
 
