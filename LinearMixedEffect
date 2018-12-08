@@ -1,0 +1,553 @@
+#include <RcppArmadillo.h>
+#include <fstream>
+#include <vector>
+#include <cmath>
+using namespace Rcpp;
+using namespace std;
+
+// This is a simple example of exporting a C++ function to R. You can
+// source this function into an R session using the Rcpp::sourceCpp 
+// function (or via the Source button on the editor toolbar). Learn
+// more about Rcpp at:
+//
+//   http://www.rcpp.org/
+//   http://adv-r.had.co.nz/Rcpp.html
+//   http://gallery.rcpp.org/
+//
+
+
+// [[Rcpp::plugins(cpp11)]]
+// [[Rcpp::depends(RcppArmadillo)]]
+// [[Rcpp::export]]
+List gibbs_compl_small_hyp(arma::mat& data, arma::mat& O, arma::mat& B, arma::mat tt,arma::colvec Si,
+                           double nu0tau,double sigma0tau, double m0,double s0) 
+{
+  // open txt files in order to save there the iterations
+  ofstream th;
+  th.open("thsmall4.txt");
+  ofstream bet;
+  bet.open("betsmall4.txt");
+  ofstream ps;
+  ps.open("psismall4.txt");
+  ofstream m_out;
+  m_out.open("msmall4.txt");
+  ofstream lambda_out;
+  lambda_out.open("lambdasmall4.txt");
+  ofstream tau_out;
+  tau_out.open("tausmall4.txt");
+  ofstream mu_out;
+  mu_out.open("mucompl4.txt");
+  
+  arma::arma_rng::set_seed(230518); // set the seed
+  // parameters gibbs sampler
+  int nit = 10000;         // Tot. number of iteration
+  int  burn = 1000;          // Burn-in
+  int thin = 5;             // Thinning
+  
+  // read of data
+  arma::vec id=data.col(0);  // dati
+  arma::colvec tij=data.col(1)/max(data.col(1)); //in order to have t between 0 and 1
+  //cout << tij.subvec(0,84).t();
+  arma::colvec y=data.col(2);
+  //cout << y.subvec(0,84).t();
+  arma::colvec season=data.col(3);
+  int max_s=max(season);
+  cout << "max_s: " << max_s;
+  int N = y.n_elem; // N: total number of observation 
+  arma::colvec n1=unique(id);  // n: total number of unique athlete
+  int n=n1.size();
+//  arma::colvec ni(n+1);
+//  ni(0)=0;
+//  ni.subvec(1,n)=sum(tt,1);
+  arma::colvec ni=sum(tt,1);
+  cout << " " << ni << " " << size(ni);
+  cout << "sum ni: "<< sum(ni)<<endl;
+  int r=O.n_cols;    // r: number of covariates
+  int q=B.n_cols;   // q: number of fixed basis function
+  cout << n << " " << N << endl;
+  
+  cout << y.subvec(0,sum(ni.subvec(0,0))-1);
+  y.subvec(0,sum(ni.subvec(0,0))-1)=y.subvec(0,sum(ni.subvec(0,0))-1)-mean(y.subvec(0,sum(ni.subvec(0,0))-1));
+  cout << y.subvec(0,sum(ni.subvec(0,0))-1);
+  for (int h=0; h<n-1; h++) {
+    y.subvec(sum(ni.subvec(0,h)),sum(ni.subvec(0,h+1))-1)=y.subvec(sum(ni.subvec(0,h)),sum(ni.subvec(0,h+1))-1)-mean(y.subvec(sum(ni.subvec(0,h)),sum(ni.subvec(0,h+1))-1));
+  }
+  // vector useful in gibbs 
+  arma::colvec y1(N);
+  arma::colvec y2(N);
+  arma::colvec y3(N);
+  arma::colvec y4(N);
+  
+  // DEFINITIONS
+  // f silvia
+  double as,bs,df,ad1,bd1,ad2,bd2;//adf,bdf;//apsi,bpsi,Psiinv;            
+  int k=int(log(q)*4);//num;
+ // arma::colvec meanalpha,b;
+  arma::colvec sig(q);
+  arma::mat Sigma(q,q);
+  arma::mat Sigmainv(q,q);
+  arma::mat Lambda(q,k);
+  arma::mat CovOmega(r,k);
+  arma::mat InvEta(k,k);
+  arma::mat eta2(n,k);
+  arma::mat THETA2(q,n);
+  arma::mat t(q, k);
+  arma::colvec delta(k);
+  arma::colvec tau(k);
+  arma::mat Ptht(q,k);
+  arma::mat Ptht2(q,k);
+  
+  double ad,bd;
+  arma::colvec  tempsum(Lambda.n_cols);
+  arma::mat THETAtil(q,n);
+  arma::colvec Thetatil2(THETAtil.n_rows);
+  arma::colvec yy=y;
+//  arma::colvec F(N);
+  /* arma::mat CovCauchy(r,k);
+  arma::mat BetaPostCov(r,r);
+  arma::mat BetaPstCov(r,r); */
+  arma::mat identity_matrix=arma::eye(N,N);
+  double totsum=0;
+  arma::vec temp1(q);
+  //seasonal component
+  arma::vec m(nit);
+  arma::vec tau_mu(nit);
+  //doublenu0tau=4.5,sigma0tau=0.05,m0=0,s0=5000;
+  vector <arma::rowvec> g;
+  vector <arma::rowvec> mu;
+//  vector <arma::rowvec> y_sum;  // vector with the sum of result per season
+  arma::mat y_sum(n,max_s);
+  arma::colvec col_mean_mu(n);
+  double meanmu=0,varmu=0;
+  double meanm=0,varm=0;
+  double sumSi=sum(Si),summu=0;
+  double nuntau,sigmantau,tauaux1=0,tauaux2=0;
+  int aux1=0,aux2=0;
+  arma::mat mu_mat(max_s,n);
+  mu_mat.zeros();
+  cout <<"lambda:" <<  size(Lambda)<<endl;
+  //regression 
+  arma::mat XX_regr(r,r);
+  arma::mat Xy_regr(r,1);
+  arma::mat beta(nit,r);
+  arma::mat Sigma_regr(r,r);
+  arma::mat Sigmainv_regr(r,r);
+  arma::colvec mu_regr(r);
+  arma::colvec res_regr(N);
+  double ssr_regr;
+  arma::colvec beta0_regr(r);
+  arma::mat Sigma0_regr(r,r);
+  
+  // error
+  arma::colvec psi(nit);
+  double nu0psi=2.2,sigma0psi=0.5; // parameters for initialization
+  double nunpsi=0,sigmanpsi=0;//eps=0; // parameters for aggiornamento
+  
+  // prediction
+  arma::mat y_pred(nit,N);
+  
+  cout << " ok definitions" << endl;
+  
+  // INITIALIZATION...
+  // f silvia
+  int rep=1;
+  arma::mat hhh(1,1);
+  hhh.fill(int(log(q)*4));
+  arma::colvec kinit=arma::repmat(hhh,rep,1);
+  as = 1;bs = .3;     // gamma hyperparameters for diagonal elements of inv(Sigma)
+  df = 9;             // gamma hyperparameters for t_{ij}
+  ad1 = 2.1,bd1 = 1;  // gamma hyperparameters for delta_1
+  ad2 = 2.1,bd2 = 1;  // gamma hyperparameters delta_h, h >= 2
+  //adf = 1, bdf = 1;   // gamma hyperparameters for ad1 and ad2 or df
+  //num = 0; 
+  k=kinit[0];
+  //apsi=.3;bpsi=.1;
+  //Psiinv=1;
+  //sig=arma::randg(q, arma::distr_param(as,1/bs)); 
+  for (int i=0; i<q; i++ ) {
+    sig(i)=1/as_scalar(arma::randg(1, arma::distr_param(as,1/bs))); 
+  }
+  Sigma=arma::diagmat(sig);
+  Sigma=(Sigma+Sigma.t())/2;
+  Sigmainv=arma::inv(Sigma);
+  Sigmainv=(Sigmainv+Sigmainv.t())/2;
+  Lambda=arma::zeros(q,k);  //loading matrix
+/*  meanalpha = arma::normcdf(0.0362); 
+  b = 1;
+  alpha = arma::randn(1)*b+meanalpha;
+  //gamma = mvnrnd(zeros(1, k), eye(k));
+  gamma=arma::mvnrnd(arma::zeros(1, k).t(), arma::eye(k,k));
+  */
+  CovOmega=arma::randg( r, k, arma::distr_param(.5,.5) );  // initialize CovOmega
+  InvEta = arma::eye(k,k);
+  eta2 =  arma::mvnrnd(arma::zeros(1,k).t(), InvEta, n).t();
+  arma::mat aux22=Lambda*eta2.t();
+  THETA2 = arma::mvnrnd(arma::zeros(1,Lambda.n_rows).t(),Sigma,eta2.n_rows);  
+  for (int j=0; j<eta2.n_rows; j++) {
+    THETA2.col(j) = arma::mvnrnd(aux22.col(j),Sigma);
+  }
+  t = arma::randg( q, k, arma::distr_param(df/2,2/df) );
+//  delta=arma::randg( k, 1, arma::distr_param(ad1,bd1));   //nb to split 
+  delta(0)=as_scalar(arma::randg( 1, arma::distr_param(ad1,bd1)));
+  delta.subvec(1,k-1)=arma::randg( k-1, 1, arma::distr_param(ad2,bd2));
+  
+  //delta =[gamrnd(ad1,bd1);gamrnd(ad2,bd2,[k-1,1])]; % global shrinkage coefficients multilpliers
+  tau=arma::cumprod(delta);
+  arma::mat aux_mat=(arma::repmat(tau.t(),q,1));
+  Ptht=t%aux_mat;
+  
+  
+  // seasonal component part
+  tau_mu[0]= 1/as_scalar(arma::randg(1, arma::distr_param(nu0tau,2/(nu0tau*sigma0tau))));
+  m[0]=as_scalar(arma::randn(1)*sqrt(tau_mu[0]/s0)+m0);
+//  tau_mu[0]=1;
+//  m[0]=0;
+  
+  for(int i=0; i<n; i++) {  // initialization g_is: number of shotput per season
+    arma::rowvec temp=tt.submat(i,0,i,Si[i]-1);
+    g.push_back(temp);
+  }
+  //cout << "ok before mu, ";
+  for (int i=0; i<n; i++) {  // initialization mu_is
+    arma::colvec mm=arma::linspace(m[0],m[0],Si[i]);
+    arma::mat tautau=arma::diagmat(arma::linspace(tau_mu(0),tau_mu(0),Si[i])); //changed
+//    arma::colvec mm=arma::linspace(0,0,Si[i]);
+//    arma::mat tautau=arma::diagmat(arma::linspace(0.1,0.1,Si[i]));
+    arma::rowvec temp2 = arma::mvnrnd(mm,tautau).t();
+    mu.push_back(temp2);  
+  }
+  
+  for (int i=0; i<n; i++)
+    for (int s=0; s<Si[i]; s++)
+      mu_mat(s,i)=mu[i][s];
+//  cout << "ok after mu, ";
+  
+  // regression
+  beta0_regr.zeros();
+  Sigma0_regr=arma::eye(r,r);
+  beta.row(0) =  arma::mvnrnd(beta0_regr,Sigma0_regr).t();
+
+  
+  // error
+  psi[0]=1/as_scalar(arma::randg(1, arma::distr_param(nu0psi/2,2/(nu0psi*sigma0psi))));
+//  psi[0]=1;
+  
+  cout << " ok initializations" << endl;
+  
+  // initialization values: // da inizializzare bene
+
+  arma::mat x4 = B.submat(0,0, sum(ni.subvec(0,0))-1,B.n_cols-1);
+  y1.subvec(0,sum(ni.subvec(0,0))-1)=x4*THETA2.col(0);
+  //cout << "ok! ";
+  for (int h=0; h<n-1; h++){
+    arma::mat x4 = B.submat(sum(ni.subvec(0,h)),0, sum(ni.subvec(0,(h+1)))-1,B.n_cols-1);
+    y1.subvec(sum(ni.subvec(0,h)),sum(ni.subvec(0,h+1))-1)=x4*THETA2.col(h);
+ //   cout << sum(ni.subvec(0,h)) <<"  ok! " << sum(ni.subvec(0,h+1))-1 << endl;
+  }
+  //cout << "y1: " <<  y1.subvec(0,84).t() << endl; 
+//  y1=y/3;
+//  y2.zeros();
+  for (int i=0; i<g.size();i++) {
+    for (int s=0; s<g[i].size(); s++) {      
+      for (int j=0; j<g[i][s]; j++) {
+        y2[aux1]=mu[i][s];
+        aux1++;
+        //    cout << aux1 << " " << mu[i][s] ;
+      }      
+    }
+  }
+  aux1=0;
+//  y2=y/3;
+  cout << "y2: " <<  y2.subvec(0,100).t() << endl; 
+  
+//  y3=y/3;
+  y3 = O*beta.row(0).t();
+//  y3=y/3;
+  int saved_it=0;
+  cout << " ok initializations of y" << endl;
+/*  y1.zeros();
+  y3.zeros();
+  y2=y;
+  */
+  for (int nn=1; nn<nit; nn++) {
+    // start: AGGIORNAMENTO f silvia
+    y1.zeros();
+    y1=y-y2-y3;
+    
+    Lambda=arma::zeros(q,k);  //loading matrix
+    for (int j=0; j<Lambda.n_rows; j++) {
+      arma::mat Vlam1 = arma::diagmat(Ptht.row(j))+sig(j)*(eta2.t()*eta2);
+      arma::mat Vlam=arma::inv(Vlam1);
+      Vlam=(Vlam+Vlam.t())/2;
+      arma::colvec Elam=Vlam*sig(j)*eta2.t()*THETA2.row(j).t();
+      Lambda.row(j)=arma::mvnrnd(Elam,Vlam).t();
+    }
+    k=Lambda.n_cols;
+   // cout << "k: "<< k << "   -  ";
+  //  Lambda=arma::zeros(q,k);  //loading matrix
+    for (int j=0; j<Lambda.n_cols; j++){
+  //    tempsum(j)=0;
+      for (int i=0; i<Lambda.n_rows; i++) {
+        t(i,j) = arma::randg(arma::distr_param(df/2+0.5,1/(df/2+Lambda(i,j)*Lambda(i,j)*tau(j))));
+//        tempsum(j)+=t(i,j)*pow(Lambda(i,j),2);
+      }
+  //    totsum+=tempsum(j)*tau(j);
+    }
+    totsum=sum(tau.t()%sum(t%(Lambda%Lambda)));
+    //cout << "ok!  ";
+    ad = ad1 + q*k/2;
+    bd = bd1 + 0.5*(1/delta(0))*totsum;
+    delta(0)=arma::randg(arma::distr_param(ad,1/bd));
+    tau=arma::cumprod(delta);
+    for (int h=0; h<k; h++){
+      ad = ad2 + q*(k-h)/2;
+      temp1=(tau.t()%sum(t%(Lambda%Lambda))).t();
+      bd=bd2+0.5*(1/delta(h))*sum(temp1.subvec(h,k-1));
+      delta(h)=arma::randg(arma::distr_param(ad,1/bd));
+      tau=arma::cumprod(delta);
+    }
+    // update precision parameter
+    for (int i=0;i<Ptht.n_rows;i++)
+      for (int j=0; j<Ptht.n_cols;j++)
+        Ptht(i,j)=t(i,j)*tau(j);
+    
+    // -- Update Sigma --          
+    THETAtil=THETA2-Lambda*eta2.t();
+  /*  for (int i=0;i<THETAtil.n_rows;i++) {
+      Thetatil2(i)=0;
+      for (int j=0; j<THETAtil.n_cols;j++)
+        Thetatil2(i)+=pow(THETAtil(i,j),2);
+    }*/
+    Thetatil2=sum(THETAtil%THETAtil,1);
+    
+    
+    for (int i=0; i<q; i++) {
+      sig(i)=1/as_scalar(arma::randg(1,arma::distr_param(as+n/2,1/(bs+0.5*Thetatil2(i)))));
+    }
+    Sigma=arma::diagmat(sig);
+    Sigma=(Sigma+Sigma.t())/2;
+    Sigmainv=arma::inv(Sigma);
+    Sigmainv=(Sigmainv+Sigmainv.t())/2;
+    //cout << "ok!!  ";
+    //aggiornamento Psiinv 
+    /*arma::mat x1 = X.submat(0,0, sum(ni.subvec(0,0))-1,X.n_cols-1);
+     F.subvec(0,sum(ni.subvec(0,0))-1)=x1*THETA2.col(0);
+    //  cout << " first: " << size(x*THETA2.col(0))<<endl;
+    for (int h=0; h<n-1; h++){
+    arma::mat x1 = X.submat(sum(ni.subvec(0,h)),0, sum(ni.subvec(0,(h+1)))-1,X.n_cols-1);
+    F.subvec(sum(ni.subvec(0,h)),sum(ni.subvec(0,h+1))-1)=x1*THETA2.col(h);
+    }
+     
+    double aux4=0;
+    for (int i=0;i<yy.n_rows;i++)
+    aux4+=pow(yy(i)-F(i),2);  
+    Psiinv=arma::randg(arma::distr_param(apsi+N/2,1/aux4));
+    */
+    // -- Update of eta -- % 
+    //cout << size(ni);
+    arma::mat x = B.submat(0,0,sum(ni.subvec(0,0))-1,B.n_cols-1);
+    arma::mat inner = ((1/psi[nn-1])*arma::eye(ni(0),ni(0)) + x*Sigma*(x.t()));
+    inner=(inner + inner.t()) / 2;
+    arma::mat invinner = arma::inv(inner);
+    invinner = (invinner + invinner.t())/2;
+    arma::mat etavar = (Lambda.t())*(x.t())*(invinner)*x*Lambda + arma::eye(k,k);
+    etavar = (etavar + etavar.t()) / 2;
+    arma::mat invetavar = arma::inv(etavar);
+    invetavar = (invetavar + invetavar.t())/2;
+    arma::colvec meaneta = (Lambda.t())*(x.t())*invinner*(y1.subvec(0,sum(ni.subvec(0,(0)))-1));          
+    //  cout << "meaneta: "<< size(meaneta) <<" ,  invetar*meaneta: " << size(invetavar*meaneta) << endl;
+    eta2.row(0) = arma::mvnrnd(invetavar*meaneta, invetavar).t();
+    for (int h =0; h< n-1; h++) {
+      arma::mat x = B.submat(sum(ni.subvec(0,h)),0, sum(ni.subvec(0,(h+1)))-1,B.n_cols-1);
+      arma::mat inner = ((1/psi[nn-1])*arma::eye(ni(h+1),ni(h+1)) + x*Sigma*(x.t()));
+      inner = (inner + inner.t()) / 2;
+      arma::mat invinner = arma::inv(inner);
+      invinner = (invinner + invinner.t()) / 2;
+      arma::mat etavar = (Lambda.t())*(x.t())*(invinner)*x*Lambda + arma::eye(k,k) ;
+      etavar = (etavar + etavar.t()) / 2;
+      arma::mat invetavar = arma::inv(etavar);
+      invetavar = (invetavar + invetavar.t())/2;
+      arma::colvec meaneta = (Lambda.t())*(x.t())*invinner*(y1.subvec(sum(ni.subvec(0,h)),sum(ni.subvec(0,(h+1)))-1));
+      eta2.row(h+1) = arma::mvnrnd(invetavar*meaneta, invetavar).t();
+    }
+  //  cout << "ok!!!  ";
+    // % -- Update Theta -- % 
+    arma::mat x2 = B.submat(0,0, sum(ni.subvec(0,0))-1,B.n_cols-1);
+    arma:: mat covfun = Sigmainv + psi[nn-1]*(x2.t())*x2;
+    covfun = (covfun + covfun.t()) / 2;
+    arma::mat Invcovfun = arma::inv(covfun);
+    Invcovfun = (Invcovfun + Invcovfun.t()) / 2;
+    arma::mat meanvec= (Invcovfun*(Sigmainv*(Lambda*eta2.row(0).t()) + psi[nn-1]*(x2.t())*(y1.subvec(0,sum(ni.subvec(0,0))-1)))).t();
+    THETA2.col(0) = arma::mvnrnd(meanvec.t(), Invcovfun);
+    for (int h=0; h<n-1; h++) {
+      arma::mat x2 = B.submat(sum(ni.subvec(0,h)),0, sum(ni.subvec(0,(h+1)))-1,B.n_cols-1);
+      arma:: mat covfun = Sigmainv + psi[nn-1]*(x2.t())*x2;
+      covfun = (covfun + covfun.t()) / 2;
+      arma::mat Invcovfun = arma::inv(covfun);
+      Invcovfun = (Invcovfun + Invcovfun.t()) / 2;
+      arma::mat meanvec = (Invcovfun*(Sigmainv*(Lambda*eta2.row(h+1).t()) + psi[nn-1]*(x2.t())*(y1.subvec(sum(ni.subvec(0,h)),sum(ni.subvec(0,h+1))-1)))).t();
+      THETA2.col(h+1) = arma::mvnrnd(meanvec.t(), Invcovfun);
+    }
+    //aggiornamento F, y1
+    arma::mat x1 = B.submat(0,0, sum(ni.subvec(0,0))-1,B.n_cols-1);
+    y1.subvec(0,sum(ni.subvec(0,0))-1)=x1*THETA2.col(0);
+    for (int h=0; h<n-1; h++){
+      arma::mat x1 = B.submat(sum(ni.subvec(0,h)),0, sum(ni.subvec(0,(h+1)))-1,B.n_cols-1);
+      y1.subvec(sum(ni.subvec(0,h)),sum(ni.subvec(0,h+1))-1)=x1*THETA2.col(h);
+    }
+    // end: AGGIORNAMENTO f silvia
+    //cout << "ok silvia   "; 
+    
+    y2=y-y1-y3;
+    
+    for (int i=0; i<n;i++) {
+      for (int s=0; s<Si[i]; s++) {      
+        aux2=aux2+int(g[i][s]);
+        //    cout << aux1 << " " << aux2 << endl;
+        if (aux2==aux1) y_sum(i,s)=0;
+        else y_sum(i,s)=sum(y2.subvec(aux1,(aux2-1)));
+        aux1=aux2;
+      }
+    } // end ricalculation y_sum
+    aux1=0,aux2=0;
+    
+    
+    // A. aggiornamento mu(i,s)
+    for (int i=0; i<n; i++) {
+      for (int s=0; s<Si[i]; s++) {
+        meanmu=(y_sum(i,s)/(psi[nn-1])+m[nn-1]/tau_mu[nn-1]);
+        varmu=(g[i][s]/(psi[nn-1])+1/tau_mu[nn-1]);
+        varmu=pow(varmu,-1);
+        //mu[i][s]=R::rnorm(varmu*meanmu,varmu);
+        //if (i==1) cout << meanmu << " " << varmu <<" "<< meanmu*varmu << " " << mu[i][s] << " " << as_scalar(arma::randn(1)*sqrt(varmu)+(varmu*meanmu)) << " -  ";
+        mu[i][s]=as_scalar(arma::randn(1)*sqrt(varmu)+(varmu*meanmu));
+        if (i==0) cout << sqrt(varmu) << " " << (varmu*meanmu) << endl;
+      }
+    }
+    //cout << "mu: " << mu[1] << endl;
+    for (int i=0; i<n; i++)
+      for (int s=0; s<Si[i]; s++) {
+        mu_mat(s,i)=mu[i][s];
+      }
+    
+     // aggiornamento m
+    for (int i=0; i<n; i++){
+      col_mean_mu(i)=0;
+      for (int s=0; s<Si[i]; s++) {
+          summu+=mu[i][s];
+          col_mean_mu(i)+=mu[i][s];
+      }
+      col_mean_mu(i)=col_mean_mu(i)/Si[i];
+    }
+    cout << " summu: " << summu << ", sumcol: "<< sum(col_mean_mu);
+    cout << ",  mean_before:"<< summu/sumSi<< ", mean_now: " << sum(col_mean_mu)/n << ", mean_mu: "<< mean(mean(mu_mat))<< endl;
+    
+    
+    meanm=((m0*s0+summu)/(s0+sumSi));
+    varm=(tau_mu[nn-1]/(s0+sumSi));
+    //meanm=((m0*s0+n)/(s0+n));
+    //varm=(tau_mu[nn-1]/(s0+n));
+    cout << " meanm: " << meanm << "  varm: " << varm << endl;
+    m[nn]=as_scalar(arma::randn(1)*sqrt(varm)+(meanm));
+    //m[nn]=R::rnorm(varm*meanm,sqrt(varm));
+    
+    
+    // aggiornamento tau;
+    nuntau=(nu0tau+sumSi);
+    //nuntau=(nu0tau+n);
+    
+    for (int i=0; i<mu.size(); i++){
+      for (int s=0; s<mu[i].size(); s++) {
+        tauaux1+=pow((mu[i][s]-summu/sumSi),2); 
+      }
+    }
+    tauaux2=(s0*sumSi)/(s0+sumSi)*pow((m0-summu/sumSi),2);
+  //  tauaux2=(s0*n)/(s0+n)*pow((m0-sum(col_mean_mu)/n),2);
+    
+    cout <<"nu0tau*sigma0tau: " << nu0tau*sigma0tau<<",  tauaux1:" << tauaux1 << ",  tauaux2:" << tauaux2 << endl;
+    summu=0;
+    sigmantau=(nu0tau*sigma0tau+tauaux1+tauaux2);
+  //  cout << "ok ";
+    cout << " -  param_tau: " << nuntau << " " << sigmantau << endl;
+    tau_mu[nn]= 1/as_scalar(arma::randg(1, arma::distr_param(nuntau/2,2/sigmantau))); 
+    cout <<"m: " << m[nn] << ", tau:  " << tau_mu[nn] << endl;
+  //  m[nn]=0;
+  //  tau_mu[nn]=0.1;
+    tauaux1=0;
+  
+    // stima y seasonal component
+    for (int i=0; i<g.size();i++) {
+      for (int s=0; s<g[i].size(); s++) {      
+        for (int j=0; j<g[i][s]; j++) {
+          y2[aux1]=mu[i][s];
+          aux1++;
+      //    cout << aux1 << " " << mu[i][s] ;
+        }      
+      }
+    }
+    aux1=0;
+    // end: AGGIORNAMENTO seasonal component
+  //  cout << "ok muis   "<<nn;
+    y2.zeros();
+    
+    // start: AGGIORNAMENTO regression part
+    y3=y-y1-y2;
+    
+    XX_regr = O.t()*O;
+    Xy_regr = O.t()*y3;
+    Sigma_regr=(arma::inv(Sigma0_regr)+(XX_regr/psi[nn-1]));
+  //  Sigma_regr=(Sigma_regr+Sigma_regr.t())/2;
+    Sigmainv_regr=arma::inv(Sigma_regr);
+//    cout << Sigmainv_regr.is_symmetric() << " ";
+//    Sigmainv_regr=(Sigmainv_regr+Sigmainv_regr.t())/2;
+  //  cout << Sigmainv_regr;
+    mu_regr=Sigmainv_regr*(Sigma0_regr*beta0_regr+Xy_regr/psi[nn-1]);
+    beta.row(nn) =  arma::mvnrnd(mu_regr,Sigmainv_regr).t();
+    y3 = O*beta.row(nn).t();
+    // end: AGGIORNAMENTO regression part
+    //cout << "ok regr   " << nn;
+    
+    //y3.zeros();
+    // start: aggiornamento psi
+    res_regr  = y - y1 - y2 - y3;
+    //cout << "res: " << res_regr.subvec(0,50) << endl;
+    ssr_regr = arma::accu(arma::pow(res_regr,2));
+  //  cout << ssr_regr << " ";
+//    for (int j=0; j<N; j++) {
+  //    eps+=pow((y[j]-y2[j]-y3[j]),2);
+   // }
+  //  cout << eps << " , psi: ";
+    nunpsi= nu0psi+N;
+    sigmanpsi= nu0psi*sigma0psi+ssr_regr;
+  //  cout << "psi: " << nunpsi << " " << sigmanpsi << endl;
+    psi[nn]=1/as_scalar(arma::randg(1, arma::distr_param(nunpsi/2,2/sigmanpsi)));
+  //  cout << psi[nn] << "   ";
+  //  eps = 0;
+    // end: aggiornamento psi
+    
+    // start: aggiornamento 
+    if ((nn>burn)&(nn%thin==0)){
+      th << vectorise(THETA2).t() <<endl;
+      bet << beta.row(nn) << endl;
+      mu_out << vectorise(mu_mat).t() << endl;
+      tau_out << tau_mu[nn] << " ";
+      m_out << m[nn] <<" ";
+      for (int j=0; j<Lambda.n_cols; j++)
+        lambda_out << arma::norm(Lambda.col(j))<<" ";
+      lambda_out << endl;
+      ps << psi[nn] << " " ;
+      saved_it++;
+    }
+    cout << nn << ",  "; // nit
+  
+  } // end gibbs
+  
+  th.close();
+  bet.close();
+  ps.close();
+  lambda_out.close();
+  m_out.close();  
+  tau_out.close();
+  cout << size(Lambda) << endl;
+  return List::create(Named("psi") = mean(psi), Named("beta") = mean(beta,0),Named("mu") = mu, Named("y_pred")=mean(y_pred,0),Named("y_each_it")=mean(y_pred,1),Named("y1")=y1,Named("y2")=y2,Named("y3")=y3,Named("THETA")=THETA2,Named("ni")=ni,Named("y")=y, Named("tau")=tau_mu, Named("m")=m, Named("y_sum")=y_sum);
+}
